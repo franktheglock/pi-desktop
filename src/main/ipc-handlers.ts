@@ -1,4 +1,4 @@
-import { ipcMain, dialog, shell, app, BrowserWindow } from 'electron'
+import { dialog, shell, app, BrowserWindow } from 'electron'
 import { PiRpcManager, PI_CLI } from './pi-rpc-manager'
 import { WorkspaceManager } from './workspace-manager'
 import { SessionTagManager } from './session-tags'
@@ -51,6 +51,7 @@ import type {
   PermissionRulesFile,
 } from '../shared/ipc-contracts'
 import { IPC_CHANNELS } from '../shared/ipc-contracts'
+import { registerIpcHandler } from './ipc-registry'
 import { COUNCIL_AGENT_IDS, clampTimeoutSeconds } from '../shared/council-config'
 import { DEFAULT_SETTINGS } from '../shared/default-settings'
 import {
@@ -389,7 +390,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return pi
   }
 
-  // Helper: broadcast to all renderer windows
+  // Helper: broadcast to all renderer windows + LAN remote clients
   function broadcast(channel: string, data: unknown): void {
     const windows = BrowserWindow.getAllWindows()
     for (const win of windows) {
@@ -397,15 +398,12 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
         win.webContents.send(channel, data)
       }
     }
-  }
-
-  function publishLan(event: unknown): void {
-    lanServer.publishPiEvent(event as PiRpcEvent)
+    lanServer.publishEvent(channel, data)
   }
 
   // ─── Pi Process Lifecycle ───────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.PI_START, async (_event, options?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PI_START, async (_event, options?: unknown) => {
     const opts = validateStartOptions(options)
     const settings = await loadAppSettings(workspaceManager)
     const activeWs = workspaceManager.getActiveWorkspace()
@@ -429,7 +427,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return pi.getStatus()
   })
 
-  ipcMain.handle(IPC_CHANNELS.PI_STOP, async () => {
+  registerIpcHandler(IPC_CHANNELS.PI_STOP, async () => {
     const activeWs = workspaceManager.getActiveWorkspace()
     if (activeWs) {
       workspaceManager.stopPiForWorkspace(activeWs.id)
@@ -437,7 +435,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return { status: 'stopped', pid: null, error: null }
   })
 
-  ipcMain.handle(IPC_CHANNELS.PI_RESTART, async (_event, options?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PI_RESTART, async (_event, options?: unknown) => {
     const opts = validateStartOptions(options)
     const settings = await loadAppSettings(workspaceManager)
     const activeWs = workspaceManager.getActiveWorkspace()
@@ -455,7 +453,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     )
   })
 
-  ipcMain.handle(IPC_CHANNELS.PI_STATUS, async () => {
+  registerIpcHandler(IPC_CHANNELS.PI_STATUS, async () => {
     const pi = workspaceManager.getActivePiManager()
     if (!pi) return { status: 'stopped', pid: null, error: null }
     return pi.getStatus()
@@ -463,7 +461,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // ─── Pi Commands ────────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.PI_PROMPT, async (_event, message: unknown, options?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PI_PROMPT, async (_event, message: unknown, options?: unknown) => {
     if (!isString(message)) throw new Error('message must be a string')
     const cmd: Record<string, unknown> = { type: 'prompt', message }
     if (isObject(options)) {
@@ -473,34 +471,34 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return getActivePi().sendCommand(cmd)
   })
 
-  ipcMain.handle(IPC_CHANNELS.PI_STEER, async (_event, message: unknown, images?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PI_STEER, async (_event, message: unknown, images?: unknown) => {
     if (!isString(message)) throw new Error('message must be a string')
     const cmd: Record<string, unknown> = { type: 'steer', message }
     if (Array.isArray(images) && images.length > 0) cmd.images = images
     return getActivePi().sendCommand(cmd)
   })
 
-  ipcMain.handle(IPC_CHANNELS.PI_FOLLOW_UP, async (_event, message: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PI_FOLLOW_UP, async (_event, message: unknown) => {
     if (!isString(message)) throw new Error('message must be a string')
     return getActivePi().sendCommand({ type: 'follow_up', message })
   })
 
-  ipcMain.handle(IPC_CHANNELS.PI_ABORT, async () => {
+  registerIpcHandler(IPC_CHANNELS.PI_ABORT, async () => {
     return getActivePi().sendCommand({ type: 'abort' })
   })
 
-  ipcMain.handle(IPC_CHANNELS.PI_BASH, async (_event, command: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PI_BASH, async (_event, command: unknown) => {
     if (!isString(command)) throw new Error('command must be a string')
     return getActivePi().sendCommand({ type: 'bash', command })
   })
 
-  ipcMain.handle(IPC_CHANNELS.PI_ABORT_BASH, async () => {
+  registerIpcHandler(IPC_CHANNELS.PI_ABORT_BASH, async () => {
     return getActivePi().sendCommand({ type: 'abort_bash' })
   })
 
   // ─── Terminal ──────────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.TERMINAL_START, async (_event, options: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TERMINAL_START, async (_event, options: unknown) => {
     const opts = isObject(options) ? options : {}
     return terminalService.start(
       {
@@ -513,25 +511,25 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     )
   })
 
-  ipcMain.handle(IPC_CHANNELS.TERMINAL_INPUT, async (_event, data: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TERMINAL_INPUT, async (_event, data: unknown) => {
     if (!isString(data)) throw new Error('terminal input must be a string')
     terminalService.write(data)
   })
 
-  ipcMain.handle(IPC_CHANNELS.TERMINAL_RESIZE, async (_event, size: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TERMINAL_RESIZE, async (_event, size: unknown) => {
     if (!isObject(size)) throw new Error('terminal size must be an object')
     const cols = typeof size.cols === 'number' ? size.cols : 80
     const rows = typeof size.rows === 'number' ? size.rows : 24
     terminalService.resize(cols, rows)
   })
 
-  ipcMain.handle(IPC_CHANNELS.TERMINAL_STOP, async () => {
+  registerIpcHandler(IPC_CHANNELS.TERMINAL_STOP, async () => {
     terminalService.stop()
   })
 
   // ─── Session Management ─────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_NEW, async () => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_NEW, async () => {
     const pi = workspaceManager.getActivePiManager()
     if (!pi || pi.getStatus().status !== 'running') {
       return { success: false, error: 'Pi not running. Start Pi first.' }
@@ -539,7 +537,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return pi.sendCommand({ type: 'new_session' })
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_SWITCH, async (_event, sessionPath: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_SWITCH, async (_event, sessionPath: unknown) => {
     if (!isString(sessionPath)) throw new Error('sessionPath must be a string')
     const pi = workspaceManager.getActivePiManager()
     if (!pi || pi.getStatus().status !== 'running') {
@@ -549,62 +547,62 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return pi.sendCommand({ type: 'switch_session', sessionPath })
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_FORK, async (_event, entryId?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_FORK, async (_event, entryId?: unknown) => {
     const cmd: Record<string, unknown> = { type: 'fork' }
     if (isString(entryId)) cmd.entryId = entryId
     return getActivePi().sendCommand(cmd)
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_CLONE, async () => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_CLONE, async () => {
     return getActivePi().sendCommand({ type: 'clone' })
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_LIST, async (_event, cwd?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_LIST, async (_event, cwd?: unknown) => {
     const ws = workspaceManager.getActiveWorkspace()
     const listSessions = createListSessions(workspaceManager)
     return listSessions(isString(cwd) ? cwd : ws?.path ?? process.cwd())
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_LIST_ALL, async (_event, cwd?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_LIST_ALL, async (_event, cwd?: unknown) => {
     const ws = workspaceManager.getActiveWorkspace()
     const listAllSessions = createListAllSessions(workspaceManager)
     return listAllSessions(isString(cwd) ? cwd : ws?.path ?? process.cwd())
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_GET_STATE, async () => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_GET_STATE, async () => {
     const pi = workspaceManager.getActivePiManager()
     if (!pi || pi.getStatus().status !== 'running') return null
     return pi.sendCommand({ type: 'get_state' })
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_GET_MESSAGES, async () => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_GET_MESSAGES, async () => {
     const pi = workspaceManager.getActivePiManager()
     if (!pi || pi.getStatus().status !== 'running') return null
     return pi.sendCommand({ type: 'get_messages' })
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_GET_STATS, async () => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_GET_STATS, async () => {
     const pi = workspaceManager.getActivePiManager()
     if (!pi || pi.getStatus().status !== 'running') return null
     return pi.sendCommand({ type: 'get_session_stats' })
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_SET_NAME, async (_event, name: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_SET_NAME, async (_event, name: unknown) => {
     if (!isString(name)) throw new Error('name must be a string')
     return getActivePi().sendCommand({ type: 'set_session_name', name })
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_EXPORT_HTML, async (_event, outputPath?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_EXPORT_HTML, async (_event, outputPath?: unknown) => {
     const cmd: Record<string, unknown> = { type: 'export_html' }
     if (isString(outputPath)) cmd.outputPath = outputPath
     return getActivePi().sendCommand(cmd)
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_GET_FORK_MESSAGES, async () => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_GET_FORK_MESSAGES, async () => {
     return getActivePi().sendCommand({ type: 'get_fork_messages' })
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_DELETE, async (_event, sessionPath: unknown): Promise<SessionDeleteResult> => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_DELETE, async (_event, sessionPath: unknown): Promise<SessionDeleteResult> => {
     if (!isString(sessionPath)) throw new Error('sessionPath must be a string')
     if (!sessionPath.endsWith(SESSION_FILE_EXTENSION)) {
       throw new Error('sessionPath must point to a .jsonl session file')
@@ -625,27 +623,27 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return result
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_ARCHIVE, async (_event, sessionId: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_ARCHIVE, async (_event, sessionId: unknown) => {
     if (!isString(sessionId)) throw new Error('sessionId must be a string')
     await archivedSessions.archive(sessionId)
     return archivedSessions.getAll()
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_UNARCHIVE, async (_event, sessionId: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_UNARCHIVE, async (_event, sessionId: unknown) => {
     if (!isString(sessionId)) throw new Error('sessionId must be a string')
     await archivedSessions.unarchive(sessionId)
     return archivedSessions.getAll()
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_LIST_ARCHIVED, async () => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_LIST_ARCHIVED, async () => {
     return archivedSessions.getAll()
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_GET_LINEAGE, async () => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_GET_LINEAGE, async () => {
     return readSessionLineage()
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_COMPACT, async (_event, customInstructions?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SESSION_COMPACT, async (_event, customInstructions?: unknown) => {
     const cmd: Record<string, unknown> = { type: 'compact' }
     if (isString(customInstructions) && customInstructions.length > 0) {
       cmd.customInstructions = customInstructions
@@ -655,36 +653,36 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // ─── Model Management ───────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.MODEL_SET, async (_event, provider: unknown, modelId: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.MODEL_SET, async (_event, provider: unknown, modelId: unknown) => {
     if (!isString(provider)) throw new Error('provider must be a string')
     if (!isString(modelId)) throw new Error('modelId must be a string')
     return getActivePi().sendCommand({ type: 'set_model', provider, modelId })
   })
 
-  ipcMain.handle(IPC_CHANNELS.MODEL_CYCLE, async () => {
+  registerIpcHandler(IPC_CHANNELS.MODEL_CYCLE, async () => {
     return getActivePi().sendCommand({ type: 'cycle_model' })
   })
 
-  ipcMain.handle(IPC_CHANNELS.MODEL_LIST_AVAILABLE, async () => {
+  registerIpcHandler(IPC_CHANNELS.MODEL_LIST_AVAILABLE, async () => {
     return getActivePi().sendCommand({ type: 'get_available_models' })
   })
 
-  ipcMain.handle(IPC_CHANNELS.THINKING_SET_LEVEL, async (_event, level: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.THINKING_SET_LEVEL, async (_event, level: unknown) => {
     if (!isString(level)) throw new Error('level must be a string')
     return getActivePi().sendCommand({ type: 'set_thinking_level', level })
   })
 
-  ipcMain.handle(IPC_CHANNELS.THINKING_CYCLE_LEVEL, async () => {
+  registerIpcHandler(IPC_CHANNELS.THINKING_CYCLE_LEVEL, async () => {
     return getActivePi().sendCommand({ type: 'cycle_thinking_level' })
   })
 
   // ─── Settings ───────────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.SETTINGS_GET_ALL, async () => {
+  registerIpcHandler(IPC_CHANNELS.SETTINGS_GET_ALL, async () => {
     return loadAppSettings(workspaceManager)
   })
 
-  ipcMain.handle(IPC_CHANNELS.SETTINGS_SAVE, async (_event, settings: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SETTINGS_SAVE, async (_event, settings: unknown) => {
     if (!isObject(settings)) throw new Error('settings must be an object')
     const partial = settings as Partial<AppSettings>
     // Ensure a token exists before enabling LAN remote.
@@ -727,11 +725,11 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // ─── LAN Remote ─────────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.LAN_GET_STATUS, async (): Promise<LanServerStatus> => {
+  registerIpcHandler(IPC_CHANNELS.LAN_GET_STATUS, async (): Promise<LanServerStatus> => {
     return lanServer.getStatus()
   })
 
-  ipcMain.handle(IPC_CHANNELS.LAN_APPLY, async (_event, options?: unknown): Promise<LanServerStatus> => {
+  registerIpcHandler(IPC_CHANNELS.LAN_APPLY, async (_event, options?: unknown): Promise<LanServerStatus> => {
     const current = await loadAppSettings(workspaceManager)
     const opts = isObject(options) ? options as Partial<AppSettings> : {}
     const enabled = typeof opts.lanServerEnabled === 'boolean' ? opts.lanServerEnabled : current.lanServerEnabled
@@ -750,7 +748,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     })
   })
 
-  ipcMain.handle(IPC_CHANNELS.LAN_REGENERATE_TOKEN, async (): Promise<LanServerStatus> => {
+  registerIpcHandler(IPC_CHANNELS.LAN_REGENERATE_TOKEN, async (): Promise<LanServerStatus> => {
     const token = generateLanToken()
     const current = await loadAppSettings(workspaceManager)
     await saveAppSettings({ lanServerToken: token })
@@ -788,7 +786,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // ─── Permission Rules ───────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.PERMISSION_RULES_GET, async (_event, scope: unknown): Promise<PermissionRulesGetResult> => {
+  registerIpcHandler(IPC_CHANNELS.PERMISSION_RULES_GET, async (_event, scope: unknown): Promise<PermissionRulesGetResult> => {
     try {
       let rulesPath: string
       if (validatePermissionRulesScope(scope) === 'global') {
@@ -808,7 +806,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.PERMISSION_RULES_SET, async (_event, scope: unknown, rules: unknown): Promise<PermissionRulesSetResult> => {
+  registerIpcHandler(IPC_CHANNELS.PERMISSION_RULES_SET, async (_event, scope: unknown, rules: unknown): Promise<PermissionRulesSetResult> => {
     try {
       const validScope = validatePermissionRulesScope(scope)
       const file = validatePermissionRulesFile({ version: PERMISSION_RULES_VERSION, rules })
@@ -835,7 +833,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.PERMISSION_RULES_IMPORT, async (): Promise<PermissionRulesImportResult> => {
+  registerIpcHandler(IPC_CHANNELS.PERMISSION_RULES_IMPORT, async (): Promise<PermissionRulesImportResult> => {
     const result = await dialog.showOpenDialog({
       title: 'Import Permission Rules',
       properties: ['openFile'],
@@ -855,7 +853,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.PERMISSION_RULES_EXPORT, async (_event, rules: unknown): Promise<PermissionRulesExportResult> => {
+  registerIpcHandler(IPC_CHANNELS.PERMISSION_RULES_EXPORT, async (_event, rules: unknown): Promise<PermissionRulesExportResult> => {
     let file: PermissionRulesFile
     try {
       file = validatePermissionRulesFile({ version: PERMISSION_RULES_VERSION, rules })
@@ -877,7 +875,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.PERMISSION_RULES_WORKSPACE_STATUS, async (): Promise<PermissionRulesWorkspaceStatus> => {
+  registerIpcHandler(IPC_CHANNELS.PERMISSION_RULES_WORKSPACE_STATUS, async (): Promise<PermissionRulesWorkspaceStatus> => {
     const activeWs = workspaceManager.getActiveWorkspace()
     if (!activeWs) return { hasWorkspaceRules: false, workspacePath: null, acknowledged: false }
     const settings = await loadAppSettings(workspaceManager)
@@ -888,7 +886,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.PERMISSION_RULES_REMOVE_WORKSPACE, async (): Promise<PermissionRulesRemoveResult> => {
+  registerIpcHandler(IPC_CHANNELS.PERMISSION_RULES_REMOVE_WORKSPACE, async (): Promise<PermissionRulesRemoveResult> => {
     try {
       const { path: rulesPath } = activeWorkspaceRulesPath(workspaceManager)
       await unlink(rulesPath)
@@ -903,23 +901,23 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // ─── Themes ─────────────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.THEMES_LIST, async (): Promise<ThemesListResult> => {
+  registerIpcHandler(IPC_CHANNELS.THEMES_LIST, async (): Promise<ThemesListResult> => {
     return listUserThemes(themesDir())
   })
 
-  ipcMain.handle(IPC_CHANNELS.THEMES_SAVE, async (_event, file: unknown, existingId: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.THEMES_SAVE, async (_event, file: unknown, existingId: unknown) => {
     if (existingId !== undefined && !isString(existingId)) {
       throw new Error('existingId must be a string')
     }
     return saveUserTheme(themesDir(), file as ThemeFile, existingId)
   })
 
-  ipcMain.handle(IPC_CHANNELS.THEMES_DELETE, async (_event, id: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.THEMES_DELETE, async (_event, id: unknown) => {
     if (!isString(id)) throw new Error('id must be a string')
     await deleteUserTheme(themesDir(), id)
   })
 
-  ipcMain.handle(IPC_CHANNELS.THEMES_INSTALL_URL, async (_event, url: unknown): Promise<ThemeImportResult> => {
+  registerIpcHandler(IPC_CHANNELS.THEMES_INSTALL_URL, async (_event, url: unknown): Promise<ThemeImportResult> => {
     if (!isString(url)) throw new Error('url must be a string')
     try {
       const { id, file } = await installThemeFromUrl(themesDir(), url)
@@ -929,7 +927,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.THEMES_EXPORT, async (_event, file: unknown): Promise<ThemeExportResult> => {
+  registerIpcHandler(IPC_CHANNELS.THEMES_EXPORT, async (_event, file: unknown): Promise<ThemeExportResult> => {
     let theme: ThemeFile
     try {
       theme = validateThemeFile(file)
@@ -955,7 +953,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.THEMES_IMPORT, async (): Promise<ThemeImportResult> => {
+  registerIpcHandler(IPC_CHANNELS.THEMES_IMPORT, async (): Promise<ThemeImportResult> => {
     const result = await dialog.showOpenDialog({
       title: 'Import Theme',
       properties: ['openFile'],
@@ -976,7 +974,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.THEMES_GALLERY_LIST, async (): Promise<ThemeGalleryResult> => {
+  registerIpcHandler(IPC_CHANNELS.THEMES_GALLERY_LIST, async (): Promise<ThemeGalleryResult> => {
     try {
       const themes = await fetchGalleryThemes()
       return { ok: true, themes }
@@ -985,7 +983,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.THEMES_GALLERY_IMAGE, async (_event, url: unknown): Promise<ThemeGalleryImageResult> => {
+  registerIpcHandler(IPC_CHANNELS.THEMES_GALLERY_IMAGE, async (_event, url: unknown): Promise<ThemeGalleryImageResult> => {
     if (!isString(url)) return { ok: false, error: 'url must be a string' }
     try {
       const { dataUri } = await fetchGalleryImage(url)
@@ -997,49 +995,49 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // ─── Workspace Management ───────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_LIST, async () => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_LIST, async () => {
     return workspaceManager.getWorkspaces()
   })
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_CREATE, async (_event, name: unknown, path: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_CREATE, async (_event, name: unknown, path: unknown) => {
     if (!isString(name)) throw new Error('name must be a string')
     if (!isString(path)) throw new Error('path must be a string')
     return workspaceManager.createWorkspace(name, path)
   })
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_REMOVE, async (_event, workspaceId: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_REMOVE, async (_event, workspaceId: unknown) => {
     if (!isString(workspaceId)) throw new Error('workspaceId must be a string')
     await workspaceManager.removeWorkspace(workspaceId)
     // Notes scoped to the removed workspace fall back to global so they survive.
     await notesManager.reassignToGlobal(workspaceId)
   })
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_RENAME, async (_event, workspaceId: unknown, name: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_RENAME, async (_event, workspaceId: unknown, name: unknown) => {
     if (!isString(workspaceId)) throw new Error('workspaceId must be a string')
     if (!isString(name)) throw new Error('name must be a string')
     await workspaceManager.renameWorkspace(workspaceId, name)
   })
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_CHANGE_PATH, async (_event, workspaceId: unknown, newPath: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_CHANGE_PATH, async (_event, workspaceId: unknown, newPath: unknown) => {
     if (!isString(workspaceId)) throw new Error('workspaceId must be a string')
     if (!isString(newPath)) throw new Error('newPath must be a string')
     await workspaceManager.changeWorkspacePath(workspaceId, newPath)
   })
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_PATH_EXISTS, async (): Promise<boolean> => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_PATH_EXISTS, async (): Promise<boolean> => {
     return workspaceManager.activeWorkspacePathExists()
   })
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_SET_ACTIVE, async (_event, workspaceId: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_SET_ACTIVE, async (_event, workspaceId: unknown) => {
     if (!isString(workspaceId)) throw new Error('workspaceId must be a string')
     return workspaceManager.setActiveWorkspace(workspaceId)
   })
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_GET_ACTIVE, async () => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_GET_ACTIVE, async () => {
     return workspaceManager.getActiveWorkspace()
   })
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_START_PI, async (_event, workspaceId: unknown, options?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_START_PI, async (_event, workspaceId: unknown, options?: unknown) => {
     if (!isString(workspaceId)) throw new Error('workspaceId must be a string')
     const opts = validateStartOptions(options)
     const settings = await loadAppSettings(workspaceManager)
@@ -1053,7 +1051,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return pi?.getStatus() ?? { status: 'stopped', pid: null, error: null }
   })
 
-  ipcMain.handle(IPC_CHANNELS.WORKSPACE_STOP_PI, async (_event, workspaceId: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.WORKSPACE_STOP_PI, async (_event, workspaceId: unknown) => {
     if (!isString(workspaceId)) throw new Error('workspaceId must be a string')
     workspaceManager.stopPiForWorkspace(workspaceId)
     return { status: 'stopped', pid: null, error: null }
@@ -1061,45 +1059,45 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // ─── Package Management ─────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.PACKAGE_LIST_INSTALLED, async () => {
+  registerIpcHandler(IPC_CHANNELS.PACKAGE_LIST_INSTALLED, async () => {
     const ws = workspaceManager.getActiveWorkspace()
     const cwd = ws?.path ?? process.cwd()
     return listInstalledPackages(cwd)
   })
 
-  ipcMain.handle(IPC_CHANNELS.PACKAGE_INSTALL, async (_event, packageSpec: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PACKAGE_INSTALL, async (_event, packageSpec: unknown) => {
     if (!isString(packageSpec)) throw new Error('packageSpec must be a string')
     const ws = workspaceManager.getActiveWorkspace()
     const cwd = ws?.path ?? process.cwd()
     return installPackage(packageSpec, cwd)
   })
 
-  ipcMain.handle(IPC_CHANNELS.PACKAGE_REMOVE, async (_event, packageSpec: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PACKAGE_REMOVE, async (_event, packageSpec: unknown) => {
     if (!isString(packageSpec)) throw new Error('packageSpec must be a string')
     const ws = workspaceManager.getActiveWorkspace()
     const cwd = ws?.path ?? process.cwd()
     return removePackage(packageSpec, cwd)
   })
 
-  ipcMain.handle(IPC_CHANNELS.PACKAGE_UPDATE, async (_event, packageSpec?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PACKAGE_UPDATE, async (_event, packageSpec?: unknown) => {
     const ws = workspaceManager.getActiveWorkspace()
     const cwd = ws?.path ?? process.cwd()
     return updatePackage(isString(packageSpec) ? packageSpec : undefined, cwd)
   })
 
-  ipcMain.handle(IPC_CHANNELS.PACKAGE_CATALOG_FETCH, async (_event, query?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.PACKAGE_CATALOG_FETCH, async (_event, query?: unknown) => {
     return fetchPackageCatalog(isString(query) ? query : undefined)
   })
 
   // ─── Skills ─────────────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.SKILLS_LIST, async () => {
+  registerIpcHandler(IPC_CHANNELS.SKILLS_LIST, async () => {
     const ws = workspaceManager.getActiveWorkspace()
     const cwd = ws?.path ?? process.cwd()
     return listSkills(cwd)
   })
 
-  ipcMain.handle(IPC_CHANNELS.COMMANDS_LIST, async () => {
+  registerIpcHandler(IPC_CHANNELS.COMMANDS_LIST, async () => {
     const pi = workspaceManager.getActivePiManager()
     if (!pi || pi.getStatus().status !== 'running') return []
     try {
@@ -1113,14 +1111,14 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.MCP_SERVERS_LIST, async () => {
+  registerIpcHandler(IPC_CHANNELS.MCP_SERVERS_LIST, async () => {
     const ws = workspaceManager.getActiveWorkspace()
     return listMcpServers(ws?.path)
   })
 
   // ─── Models Config ──────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.MODELS_READ, async (): Promise<ModelsReadResult> => {
+  registerIpcHandler(IPC_CHANNELS.MODELS_READ, async (): Promise<ModelsReadResult> => {
     const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? ''
     const file = join(homeDir, '.pi', 'agent', 'models.json')
     if (!existsSync(file)) return { config: { providers: {} } }
@@ -1141,7 +1139,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.MODELS_WRITE, async (_event, config: unknown): Promise<{ success: boolean; error?: string }> => {
+  registerIpcHandler(IPC_CHANNELS.MODELS_WRITE, async (_event, config: unknown): Promise<{ success: boolean; error?: string }> => {
     if (typeof config !== 'object' || config === null || typeof (config as ModelsConfig).providers !== 'object') {
       return { success: false, error: 'Invalid models config' }
     }
@@ -1157,12 +1155,12 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.COUNCIL_DETECT, async (): Promise<CouncilDetectResult> => {
+  registerIpcHandler(IPC_CHANNELS.COUNCIL_DETECT, async (): Promise<CouncilDetectResult> => {
     const agents = detectAgents().map((a) => ({ id: a.id, found: a.found }))
     return { agents }
   })
 
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.COUNCIL_RUN_CONSULTANTS,
     async (_event, payload: unknown): Promise<CouncilRunResult> => {
       // Validate the payload before spawning any child processes.
@@ -1199,7 +1197,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     },
   )
 
-  ipcMain.handle(
+  registerIpcHandler(
     IPC_CHANNELS.COUNCIL_ARBITER,
     async (_event, payload: unknown): Promise<CouncilArbiterResult> => {
       if (!isObject(payload)) throw new Error('Council arbiter payload must be an object')
@@ -1249,43 +1247,43 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // ─── Session Tags ───────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.TAG_GET, async (_event, sessionId: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TAG_GET, async (_event, sessionId: unknown) => {
     if (!isString(sessionId)) throw new Error('sessionId must be a string')
     return tagManager.getTags(sessionId)
   })
 
-  ipcMain.handle(IPC_CHANNELS.TAG_SET, async (_event, sessionId: unknown, tags: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TAG_SET, async (_event, sessionId: unknown, tags: unknown) => {
     if (!isString(sessionId)) throw new Error('sessionId must be a string')
     if (!Array.isArray(tags)) throw new Error('tags must be an array')
     await tagManager.setTags(sessionId, tags.map(String))
     return tagManager.getTags(sessionId)
   })
 
-  ipcMain.handle(IPC_CHANNELS.TAG_ADD, async (_event, sessionId: unknown, tag: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TAG_ADD, async (_event, sessionId: unknown, tag: unknown) => {
     if (!isString(sessionId)) throw new Error('sessionId must be a string')
     if (!isString(tag)) throw new Error('tag must be a string')
     return tagManager.addTag(sessionId, tag)
   })
 
-  ipcMain.handle(IPC_CHANNELS.TAG_REMOVE, async (_event, sessionId: unknown, tag: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TAG_REMOVE, async (_event, sessionId: unknown, tag: unknown) => {
     if (!isString(sessionId)) throw new Error('sessionId must be a string')
     if (!isString(tag)) throw new Error('tag must be a string')
     return tagManager.removeTag(sessionId, tag)
   })
 
-  ipcMain.handle(IPC_CHANNELS.TAG_GET_ALL, async () => {
+  registerIpcHandler(IPC_CHANNELS.TAG_GET_ALL, async () => {
     return tagManager.getAllTags()
   })
 
-  ipcMain.handle(IPC_CHANNELS.TAG_GET_ALL_USED, async () => {
+  registerIpcHandler(IPC_CHANNELS.TAG_GET_ALL_USED, async () => {
     return tagManager.getAllUsedTags()
   })
 
-  ipcMain.handle(IPC_CHANNELS.TAG_AUTO_GET_ALL, async () => {
+  registerIpcHandler(IPC_CHANNELS.TAG_AUTO_GET_ALL, async () => {
     return tagManager.getAutoTags()
   })
 
-  ipcMain.handle(IPC_CHANNELS.TAG_AUTO_ENSURE, async (_event, sessions: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TAG_AUTO_ENSURE, async (_event, sessions: unknown) => {
     if (!Array.isArray(sessions)) throw new Error('sessions must be an array')
     const refs: Array<{ sessionId: string; path: string }> = []
     for (const s of sessions) {
@@ -1303,54 +1301,54 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return tagManager.ensureAutoTags(refs)
   })
 
-  ipcMain.handle(IPC_CHANNELS.TAG_AUTO_REMOVE, async (_event, sessionId: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.TAG_AUTO_REMOVE, async (_event, sessionId: unknown) => {
     if (!isString(sessionId)) throw new Error('sessionId must be a string')
     await tagManager.removeAutoTag(sessionId)
   })
 
   // ─── Notes (reusable prompts / commands) ──────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.NOTES_LIST, async () => {
+  registerIpcHandler(IPC_CHANNELS.NOTES_LIST, async () => {
     return notesManager.list()
   })
 
-  ipcMain.handle(IPC_CHANNELS.NOTES_CREATE, async (_event, input: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.NOTES_CREATE, async (_event, input: unknown) => {
     return notesManager.create(parseNoteInput(input))
   })
 
-  ipcMain.handle(IPC_CHANNELS.NOTES_UPDATE, async (_event, id: unknown, patch: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.NOTES_UPDATE, async (_event, id: unknown, patch: unknown) => {
     if (!isString(id)) throw new Error('id must be a string')
     return notesManager.update(id, parseNoteUpdate(patch))
   })
 
-  ipcMain.handle(IPC_CHANNELS.NOTES_REMOVE, async (_event, id: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.NOTES_REMOVE, async (_event, id: unknown) => {
     if (!isString(id)) throw new Error('id must be a string')
     await notesManager.remove(id)
   })
 
   // ─── File Operations ────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.FILE_TREE, async (_event, maxDepth?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.FILE_TREE, async (_event, maxDepth?: unknown) => {
     const fs = workspaceManager.getActiveFileService()
     if (!fs) throw new Error('No active workspace')
     return fs.getFileTree(typeof maxDepth === 'number' ? maxDepth : 4)
   })
 
-  ipcMain.handle(IPC_CHANNELS.FILE_SEARCH, async (_event, query: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.FILE_SEARCH, async (_event, query: unknown) => {
     if (!isString(query)) throw new Error('query must be a string')
     const fs = workspaceManager.getActiveFileService()
     if (!fs) throw new Error('No active workspace')
     return fs.searchFiles(query)
   })
 
-  ipcMain.handle(IPC_CHANNELS.FILE_SEARCH_CONTENT, async (_event, query: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.FILE_SEARCH_CONTENT, async (_event, query: unknown) => {
     if (!isString(query)) throw new Error('query must be a string')
     const fs = workspaceManager.getActiveFileService()
     if (!fs) throw new Error('No active workspace')
     return fs.searchContent(query)
   })
 
-  ipcMain.handle(IPC_CHANNELS.FILE_READ, async (_event, filePath: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.FILE_READ, async (_event, filePath: unknown) => {
     if (!isString(filePath)) throw new Error('filePath must be a string')
     const fs = workspaceManager.getActiveFileService()
     if (!fs) throw new Error('No active workspace')
@@ -1359,12 +1357,12 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // Reads a user-selected attachment by absolute path (chosen via the native
   // open dialog, so it may live outside the workspace).
-  ipcMain.handle(IPC_CHANNELS.FILE_READ_ATTACHMENT, async (_event, filePath: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.FILE_READ_ATTACHMENT, async (_event, filePath: unknown) => {
     if (!isString(filePath)) throw new Error('filePath must be a string')
     return readAttachment(filePath)
   })
 
-  ipcMain.handle(IPC_CHANNELS.FILE_WRITE, async (_event, filePath: unknown, content: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.FILE_WRITE, async (_event, filePath: unknown, content: unknown) => {
     if (!isString(filePath)) throw new Error('filePath must be a string')
     if (!isString(content)) throw new Error('content must be a string')
     const fs = workspaceManager.getActiveFileService()
@@ -1373,19 +1371,19 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return { ok: true }
   })
 
-  ipcMain.handle(IPC_CHANNELS.FILE_DIFF, async (_event, filePath?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.FILE_DIFF, async (_event, filePath?: unknown) => {
     const fs = workspaceManager.getActiveFileService()
     if (!fs) throw new Error('No active workspace')
     return fs.getFileDiff(isString(filePath) ? filePath : undefined)
   })
 
-  ipcMain.handle(IPC_CHANNELS.FILE_STAGED_DIFF, async (_event, filePath?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.FILE_STAGED_DIFF, async (_event, filePath?: unknown) => {
     const fs = workspaceManager.getActiveFileService()
     if (!fs) throw new Error('No active workspace')
     return fs.getStagedDiff(isString(filePath) ? filePath : undefined)
   })
 
-  ipcMain.handle(IPC_CHANNELS.GIT_STATUS, async () => {
+  registerIpcHandler(IPC_CHANNELS.GIT_STATUS, async () => {
     const fs = workspaceManager.getActiveFileService()
     // No active workspace (e.g. the home screen before any workspace is opened)
     // is an expected state, not an error — report no changes rather than throwing
@@ -1400,7 +1398,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return result
   })
 
-  ipcMain.handle(IPC_CHANNELS.GIT_BRANCH, async () => {
+  registerIpcHandler(IPC_CHANNELS.GIT_BRANCH, async () => {
     const fs = workspaceManager.getActiveFileService()
     // No active workspace: report "no branch" rather than throwing (matches the
     // Promise<string | null> contract; keeps the no-workspace state error-free).
@@ -1410,7 +1408,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
 
   // ─── System ─────────────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.SYSTEM_OPEN_DIALOG, async (_event, options?: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SYSTEM_OPEN_DIALOG, async (_event, options?: unknown) => {
     // Default to directory selection for back-compat with workspace pickers;
     // callers pass mode: 'file' (and optional filters) to attach files.
     const pickFile = isObject(options) && options.mode === 'file'
@@ -1427,7 +1425,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     return result.canceled ? null : result.filePaths[0]
   })
 
-  ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_PATH, async (_event, name: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SYSTEM_GET_PATH, async (_event, name: unknown) => {
     if (!isString(name)) throw new Error('name must be a string')
     const validPaths = ['home', 'appData', 'userData', 'temp', 'desktop', 'documents'] as const
     if (validPaths.includes(name as (typeof validPaths)[number])) {
@@ -1436,7 +1434,7 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     throw new Error(`Invalid path name: ${name}`)
   })
 
-  ipcMain.handle(IPC_CHANNELS.SYSTEM_OPEN_EXTERNAL, async (_event, url: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.SYSTEM_OPEN_EXTERNAL, async (_event, url: unknown) => {
     if (!isString(url)) throw new Error('url must be a string')
     if (!url.startsWith('https://') && !url.startsWith('http://')) {
       throw new Error('Only http(s) URLs are allowed')
@@ -1444,36 +1442,36 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     await shell.openExternal(url)
   })
 
-  ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_VERSION, async () => {
+  registerIpcHandler(IPC_CHANNELS.SYSTEM_GET_VERSION, async () => {
     return app.getVersion()
   })
 
-  ipcMain.handle(IPC_CHANNELS.ACTIVITY_GET_STATS, async (): Promise<ActivityStatsResult> => {
+  registerIpcHandler(IPC_CHANNELS.ACTIVITY_GET_STATS, async (): Promise<ActivityStatsResult> => {
     return activityStatsStore.computeStats()
   })
 
-  ipcMain.handle(IPC_CHANNELS.UPDATE_CHECK, async (): Promise<UpdateCheckResult> => {
+  registerIpcHandler(IPC_CHANNELS.UPDATE_CHECK, async (): Promise<UpdateCheckResult> => {
     return checkForUpdate()
   })
 
   // ─── Extension UI Responses ─────────────────────────────────────────────
 
-  ipcMain.handle(IPC_CHANNELS.UI_SELECT_RESPONSE, async (_event, id: unknown, value: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.UI_SELECT_RESPONSE, async (_event, id: unknown, value: unknown) => {
     if (!isString(id)) throw new Error('id must be a string')
     getActivePi().sendExtensionUiResponse(id, { value })
   })
 
-  ipcMain.handle(IPC_CHANNELS.UI_CONFIRM_RESPONSE, async (_event, id: unknown, confirmed: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.UI_CONFIRM_RESPONSE, async (_event, id: unknown, confirmed: unknown) => {
     if (!isString(id)) throw new Error('id must be a string')
     getActivePi().sendExtensionUiResponse(id, { confirmed: !!confirmed })
   })
 
-  ipcMain.handle(IPC_CHANNELS.UI_INPUT_RESPONSE, async (_event, id: unknown, value: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.UI_INPUT_RESPONSE, async (_event, id: unknown, value: unknown) => {
     if (!isString(id)) throw new Error('id must be a string')
     getActivePi().sendExtensionUiResponse(id, { value })
   })
 
-  ipcMain.handle(IPC_CHANNELS.UI_EDITOR_RESPONSE, async (_event, id: unknown, value: unknown) => {
+  registerIpcHandler(IPC_CHANNELS.UI_EDITOR_RESPONSE, async (_event, id: unknown, value: unknown) => {
     if (!isString(id)) throw new Error('id must be a string')
     getActivePi().sendExtensionUiResponse(id, { value })
   })
@@ -1493,18 +1491,15 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
     piManager.on('event', (event: PiRpcEvent) => {
       if (isActiveManager(piManager)) {
         broadcast(IPC_CHANNELS.EVENT_PI, event)
-        publishLan(event)
       }
     })
 
     piManager.on('status-change', () => {
       if (isActiveManager(piManager)) {
-        const payload = {
+        broadcast(IPC_CHANNELS.EVENT_PI, {
           type: 'status_change',
           ...piManager.getStatus(),
-        }
-        broadcast(IPC_CHANNELS.EVENT_PI, payload)
-        publishLan(payload)
+        })
       }
     })
   })
@@ -1515,12 +1510,10 @@ export function registerIpcHandlers(workspaceManager: WorkspaceManager): void {
   const broadcastActiveStatus = (): void => {
     const pi = workspaceManager.getActivePiManager()
     if (!pi) return
-    const payload = {
+    broadcast(IPC_CHANNELS.EVENT_PI, {
       type: 'status_change',
       ...pi.getStatus(),
-    }
-    broadcast(IPC_CHANNELS.EVENT_PI, payload)
-    publishLan(payload)
+    })
   }
   workspaceManager.onActiveWorkspaceChanged(broadcastActiveStatus)
 

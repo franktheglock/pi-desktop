@@ -1,9 +1,18 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { App } from './app'
+import { installRemoteBridge } from './remote-bridge'
 import '@fontsource-variable/inter'
 import '@fontsource-variable/jetbrains-mono'
 import './index.css'
+
+// LAN / browser: install IPC-over-HTTP bridge before the app touches piDesktop.
+if (
+  (window as unknown as { __PI_REMOTE__?: boolean }).__PI_REMOTE__ ||
+  !(window as unknown as { piDesktop?: unknown }).piDesktop
+) {
+  installRemoteBridge()
+}
 
 // OpenMoji COLRv1 color emoji font (vendored woff2, @font-face in index.css) —
 // sharp vector emoji that read better on dark than the OS emoji font. Preloaded

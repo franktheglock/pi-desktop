@@ -16,8 +16,22 @@ import { ReviewRail } from './components/review-rail'
 import { useContextMenu, buildDefaultContextMenu } from './components/context-menu'
 import { usePiEvents, useMenuActions, useInitialize, useNotePickerShortcut } from './hooks'
 import { useAppStore } from './store'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { ArrowUpCircle, X } from 'lucide-react'
+
+function useIsNarrow(breakpoint = 768): boolean {
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia(`(max-width: ${breakpoint}px)`).matches : false
+  )
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint}px)`)
+    const onChange = (): void => setNarrow(mq.matches)
+    onChange()
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [breakpoint])
+  return narrow
+}
 
 export function App(): React.JSX.Element {
   usePiEvents()
@@ -27,9 +41,11 @@ export function App(): React.JSX.Element {
 
   const currentView = useAppStore((state) => state.currentView)
   const sidebarOpen = useAppStore((state) => state.sidebarOpen)
+  const toggleSidebar = useAppStore((state) => state.toggleSidebar)
   const updateInfo = useAppStore((state) => state.updateInfo)
   const updateDismissed = useAppStore((state) => state.updateDismissed)
   const dismissUpdate = useAppStore((state) => state.dismissUpdate)
+  const isNarrow = useIsNarrow()
 
   // Global context menu
   const { show, ContextMenuComponent } = useContextMenu()
@@ -103,7 +119,19 @@ export function App(): React.JSX.Element {
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
-        {sidebarOpen && !isHome && <Sidebar />}
+        {sidebarOpen && !isHome && isNarrow && (
+          <button
+            type="button"
+            className="pi-mobile-sidebar-backdrop"
+            aria-label="Close sidebar"
+            onClick={() => toggleSidebar()}
+          />
+        )}
+        {sidebarOpen && !isHome && (
+          <div className={isNarrow ? 'pi-mobile-sidebar' : undefined}>
+            <Sidebar />
+          </div>
+        )}
 
         <div className="flex min-w-0 flex-1 overflow-hidden">
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -121,11 +149,20 @@ export function App(): React.JSX.Element {
             {currentView === 'notes' && <NotesPanel />}
             {currentView === 'skills' && <SkillsPanel />}
           </main>
-          {currentView === 'chat' && <ReviewRail />}
+          {currentView === 'chat' && !isNarrow && <ReviewRail />}
+          {currentView === 'chat' && isNarrow && (
+            <div className="pi-mobile-hide-review" aria-hidden>
+              <ReviewRail />
+            </div>
+          )}
         </div>
       </div>
 
-      {!isHome && <StatusBar />}
+      {!isHome && (
+        <div className={isNarrow ? 'pi-mobile-status' : undefined}>
+          <StatusBar />
+        </div>
+      )}
       <ExtensionUiDialog />
       <AppConfirmDialog />
       <NotePicker />

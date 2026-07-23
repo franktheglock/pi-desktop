@@ -809,7 +809,7 @@ export function SettingsPanel(): React.JSX.Element {
         <SettingsSection title="LAN Remote">
           <SettingsRow
             label="Enable LAN Server"
-            description="Serve a mobile-friendly chat UI on your local network so phones and other devices can talk to Pi"
+            description="Serve the full Pi Desktop UI on your LAN so phones and other devices can control the same session"
           >
             <Toggle
               checked={lanEnabled}

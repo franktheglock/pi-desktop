@@ -1,0 +1,27 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100dvh; display: grid; place-items: center;
+  background: #0a0a0a; color: #e5e5e5;
+  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1rem, env(safe-area-inset-bottom));
+}
+.card {
+  width: min(100%, 400px); background: #141414; border: 1px solid #2a2a2a;
+  border-radius: 20px; padding: 1.75rem 1.25rem;
+}
+.logo {
+  width: 3rem; height: 3rem; border-radius: 12px; background: #1e3a5f; color: #93c5fd;
+  display: grid; place-items: center; font-size: 1.5rem; font-weight: 700; margin-bottom: 1rem;
+}
+h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+.muted { color: #a3a3a3; font-size: 0.9rem; margin: 0 0 1.25rem; }
+label { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.8rem; color: #a3a3a3; }
+input {
+  background: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 12px;
+  padding: 0.85rem; color: #e5e5e5; font-size: 1rem;
+}
+button {
+  margin-top: 1rem; width: 100%; border: none; border-radius: 12px;
+  padding: 0.9rem; background: #3b82f6; color: #fff; font-weight: 600; font-size: 1rem;
+}
+.error { color: #ef4444; font-size: 0.875rem; margin-top: 0.75rem; }

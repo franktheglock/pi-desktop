@@ -199,9 +199,11 @@ src/
 
 ### LAN Remote
 
-- Optional HTTP server (default port `4747`) so phones/other devices on the LAN can chat with the active Pi session
-- Token-authenticated mobile web UI under `resources/lan-web/` (SSE for live events)
-- Toggle/port/token in Settings → LAN Remote; copy a full URL with token for easy phone access
+- Optional HTTP server (default port `4747`) so phones/other devices on the LAN get the **same React app** as desktop
+- Token auth; IPC is proxied over `POST /api/invoke` + SSE `/api/events` (`remote-bridge.ts` installs `window.piDesktop` in the browser)
+- Serves the built renderer from `out/renderer`; login shell in `resources/lan-web/login.html`
+- Narrow viewports: sidebar becomes an overlay drawer; review rail hidden on small screens
+- Toggle/port/token in Settings → LAN Remote
 
 ### Home / Activity Dashboard
 

@@ -1,5 +1,41 @@
 @import "tailwindcss";
 
+/* Mobile / remote shell: safe areas + compact chrome when the full app runs
+   in a browser (LAN remote) or a narrow viewport. */
+html.pi-remote {
+  -webkit-text-size-adjust: 100%;
+}
+html.pi-remote body {
+  overscroll-behavior: none;
+}
+@media (max-width: 768px) {
+  /* Sidebar as overlay drawer instead of permanent column */
+  .pi-mobile-sidebar {
+    position: fixed !important;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: min(86vw, 20rem) !important;
+    max-width: 20rem;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.55);
+  }
+  .pi-mobile-sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: rgba(0, 0, 0, 0.5);
+  }
+  /* Review rail stacks poorly on phones — hide unless explicitly needed later */
+  .pi-mobile-hide-review {
+    display: none !important;
+  }
+  /* Status bar: allow wrap / horizontal scroll */
+  .pi-mobile-status {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
 /* Vendored OpenMoji COLRv1 color emoji font — sharp vector emoji that read well
    on dark backgrounds. Used as the emoji fallback across chat, code, and diff. */
 @font-face {

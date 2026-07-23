@@ -1,24 +1,23 @@
 /**
- * LAN remote access: HTTP + SSE so phones/other devices on the network can
- * chat with the active Pi session. Static UI is served from resources/lan-web.
+ * LAN remote: HTTP server that serves the full Pi Desktop renderer and proxies
+ * the same IPC surface over REST + SSE so phones get feature parity with the
+ * desktop shell (same React app, same handlers).
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { networkInterfaces } from 'os'
 import { randomBytes } from 'crypto'
-import { createReadStream, existsSync, statSync } from 'fs'
+import { createReadStream, existsSync, readFileSync, statSync } from 'fs'
 import { extname, join, normalize } from 'path'
 import { app } from 'electron'
 import type { WorkspaceManager } from './workspace-manager'
-import type { PiRpcManager } from './pi-rpc-manager'
-import type { PiRpcEvent } from '../shared/ipc-contracts'
+import { invokeIpcHandler } from './ipc-registry'
 
 export const DEFAULT_LAN_PORT = 4747
 
 export interface LanServerConfig {
   enabled: boolean
   port: number
-  /** Shared secret; clients send Authorization: Bearer <token> or ?token= */
   token: string
 }
 
@@ -30,10 +29,7 @@ export interface LanServerStatus {
   error: string | null
 }
 
-type SseClient = {
-  res: ServerResponse
-  id: number
-}
+type SseClient = { res: ServerResponse; id: number }
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -44,13 +40,14 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon',
   '.json': 'application/json',
   '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.map': 'application/json',
 }
 
 export function generateLanToken(): string {
   return randomBytes(18).toString('base64url')
 }
 
-/** IPv4 addresses on non-internal interfaces (LAN-facing). */
 export function listLanAddresses(): string[] {
   const nets = networkInterfaces()
   const out: string[] = []
@@ -69,14 +66,14 @@ export function buildLanUrls(port: number): string[] {
   return hosts.map((h) => `http://${h}:${port}`)
 }
 
-export function resolveLanWebRoot(): string {
-  // Packaged: extraResources → resources/lan-web
-  // Dev: repo resources/lan-web
+/** Built renderer root (full React app). */
+export function resolveRendererRoot(): string {
   const candidates = [
-    join(process.resourcesPath ?? '', 'resources', 'lan-web'),
-    join(app.getAppPath(), 'resources', 'lan-web'),
-    join(__dirname, '../../resources/lan-web'),
-    join(process.cwd(), 'resources', 'lan-web'),
+    join(app.getAppPath(), 'out', 'renderer'),
+    join(process.resourcesPath ?? '', 'app.asar.unpacked', 'out', 'renderer'),
+    join(process.resourcesPath ?? '', 'app', 'out', 'renderer'),
+    join(__dirname, '../../out/renderer'),
+    join(process.cwd(), 'out/renderer'),
   ]
   for (const dir of candidates) {
     if (dir && existsSync(join(dir, 'index.html'))) return dir
@@ -84,7 +81,7 @@ export function resolveLanWebRoot(): string {
   return candidates[candidates.length - 1]
 }
 
-function readBody(req: IncomingMessage, limit = 2_000_000): Promise<string> {
+function readBody(req: IncomingMessage, limit = 8_000_000): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
@@ -108,23 +105,22 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(data),
     'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
   })
   res.end(data)
 }
 
 export class LanServer {
   private server: Server | null = null
-  private config: LanServerConfig = {
-    enabled: false,
-    port: DEFAULT_LAN_PORT,
-    token: '',
-  }
+  private config: LanServerConfig = { enabled: false, port: DEFAULT_LAN_PORT, token: '' }
   private error: string | null = null
   private sseClients = new Map<number, SseClient>()
   private nextSseId = 1
-  private webRoot = resolveLanWebRoot()
+  private rendererRoot = resolveRendererRoot()
 
-  constructor(private readonly workspaceManager: WorkspaceManager) {}
+  constructor(private readonly _workspaceManager: WorkspaceManager) {
+    void this._workspaceManager
+  }
 
   getStatus(): LanServerStatus {
     const running = this.server !== null
@@ -137,7 +133,6 @@ export class LanServer {
     }
   }
 
-  /** Apply settings; start/stop/restart as needed. */
   async applyConfig(partial: Partial<LanServerConfig>): Promise<LanServerStatus> {
     const next: LanServerConfig = {
       enabled: partial.enabled ?? this.config.enabled,
@@ -159,7 +154,6 @@ export class LanServer {
       await this.stop()
       return this.getStatus()
     }
-
     if (wasRunning && changed) await this.stop()
     if (!this.server) await this.start()
     return this.getStatus()
@@ -168,7 +162,11 @@ export class LanServer {
   async start(): Promise<void> {
     if (this.server) return
     this.error = null
-    this.webRoot = resolveLanWebRoot()
+    this.rendererRoot = resolveRendererRoot()
+    if (!existsSync(join(this.rendererRoot, 'index.html'))) {
+      this.error = `Renderer not found at ${this.rendererRoot}. Run a full build first.`
+      throw new Error(this.error)
+    }
 
     const server = createServer((req, res) => {
       void this.handle(req, res)
@@ -196,20 +194,18 @@ export class LanServer {
       }
     }
     this.sseClients.clear()
-
     const server = this.server
     this.server = null
     if (!server) return
-
     await new Promise<void>((resolve) => {
       server.close(() => resolve())
     })
   }
 
-  /** Forward active-workspace Pi events to SSE clients. */
-  publishPiEvent(event: PiRpcEvent | Record<string, unknown>): void {
+  /** Push an IPC event channel payload to all SSE clients. */
+  publishEvent(channel: string, data: unknown): void {
     if (this.sseClients.size === 0) return
-    const payload = `event: pi\ndata: ${JSON.stringify(event)}\n\n`
+    const payload = `event: ipc\ndata: ${JSON.stringify({ channel, data })}\n\n`
     for (const [id, client] of this.sseClients) {
       try {
         client.res.write(payload)
@@ -219,20 +215,20 @@ export class LanServer {
     }
   }
 
+  /** @deprecated use publishEvent */
+  publishPiEvent(event: unknown): void {
+    this.publishEvent('event:pi', event)
+  }
+
   private isAuthorized(req: IncomingMessage, url: URL): boolean {
     const token = this.config.token
     if (!token) return false
     const header = req.headers.authorization
     if (header?.startsWith('Bearer ') && header.slice(7) === token) return true
     if (url.searchParams.get('token') === token) return true
-    // Cookie set by /api/login for browser convenience
     const cookie = req.headers.cookie ?? ''
     if (cookie.split(';').some((c) => c.trim() === `pi_lan_token=${token}`)) return true
     return false
-  }
-
-  private getActivePi(): PiRpcManager | null {
-    return this.workspaceManager.getActivePiManager()
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -241,24 +237,20 @@ export class LanServer {
       const url = new URL(req.url ?? '/', `http://${host}`)
       const path = url.pathname
 
-      // CORS for API (LAN browsers)
-      if (path.startsWith('/api/')) {
-        res.setHeader('Access-Control-Allow-Origin', '*')
-        res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        if (req.method === 'OPTIONS') {
-          res.writeHead(204)
-          res.end()
-          return
-        }
-      }
-
-      if (path === '/api/health') {
-        sendJson(res, 200, { ok: true })
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204)
+        res.end()
         return
       }
 
-      // Login page always public; sets cookie then redirects
+      if (path === '/api/health') {
+        sendJson(res, 200, { ok: true, renderer: existsSync(join(this.rendererRoot, 'index.html')) })
+        return
+      }
+
       if (path === '/api/login' && req.method === 'POST') {
         const raw = await readBody(req)
         let body: { token?: string } = {}
@@ -279,85 +271,43 @@ export class LanServer {
         return
       }
 
-      if (path.startsWith('/api/') && path !== '/api/login') {
+      // Auth gate for API (except login/health)
+      if (path.startsWith('/api/')) {
         if (!this.isAuthorized(req, url)) {
           sendJson(res, 401, { error: 'Unauthorized' })
           return
         }
       }
 
-      if (path === '/api/status' && req.method === 'GET') {
-        const pi = this.getActivePi()
-        const ws = this.workspaceManager.getActiveWorkspace()
-        sendJson(res, 200, {
-          pi: pi?.getStatus() ?? { status: 'stopped', pid: null, error: null },
-          workspace: ws ? { name: ws.name, path: ws.path } : null,
-        })
-        return
-      }
-
-      if (path === '/api/messages' && req.method === 'GET') {
-        const pi = this.getActivePi()
-        if (!pi) {
-          sendJson(res, 503, { error: 'Pi not running' })
-          return
-        }
-        try {
-          const result = await pi.sendCommand({ type: 'get_messages' })
-          sendJson(res, 200, result)
-        } catch (err) {
-          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
-        }
-        return
-      }
-
-      if (path === '/api/prompt' && req.method === 'POST') {
-        const pi = this.getActivePi()
-        if (!pi) {
-          sendJson(res, 503, { error: 'Pi not running' })
-          return
-        }
+      if (path === '/api/invoke' && req.method === 'POST') {
         const raw = await readBody(req)
-        let message = ''
+        let channel = ''
+        let args: unknown[] = []
         try {
-          const body = JSON.parse(raw) as { message?: string }
-          message = typeof body.message === 'string' ? body.message : ''
+          const body = JSON.parse(raw) as { channel?: string; args?: unknown[] }
+          channel = typeof body.channel === 'string' ? body.channel : ''
+          args = Array.isArray(body.args) ? body.args : []
         } catch {
-          message = ''
+          sendJson(res, 400, { error: 'Invalid JSON' })
+          return
         }
-        if (!message.trim()) {
-          sendJson(res, 400, { error: 'message required' })
+        if (!channel) {
+          sendJson(res, 400, { error: 'channel required' })
           return
         }
         try {
-          const result = await pi.sendCommand({ type: 'prompt', message })
-          sendJson(res, 200, result ?? { ok: true })
+          const result = await invokeIpcHandler(channel, ...args)
+          sendJson(res, 200, { ok: true, result })
         } catch (err) {
-          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
-        }
-        return
-      }
-
-      if (path === '/api/abort' && req.method === 'POST') {
-        const pi = this.getActivePi()
-        if (!pi) {
-          sendJson(res, 503, { error: 'Pi not running' })
-          return
-        }
-        try {
-          const result = await pi.sendCommand({ type: 'abort' })
-          sendJson(res, 200, result ?? { ok: true })
-        } catch (err) {
-          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
+          sendJson(res, 500, {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          })
         }
         return
       }
 
       if (path === '/api/events' && req.method === 'GET') {
-        if (!this.isAuthorized(req, url)) {
-          sendJson(res, 401, { error: 'Unauthorized' })
-          return
-        }
         res.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform',
@@ -373,10 +323,24 @@ export class LanServer {
         return
       }
 
-      // Static files (mobile UI). Auth optional for HTML shell so login can load;
-      // API still protected. Prefer requiring token for static in production LAN —
-      // we allow public static + cookie after login.
-      await this.serveStatic(req, res, path)
+      // Static app shell: public (useless without API). API stays token-gated.
+      // If ?token= matches, set cookie so subsequent API/SSE work from this browser.
+      if (url.searchParams.get('token') === this.config.token) {
+        res.setHeader(
+          'Set-Cookie',
+          `pi_lan_token=${this.config.token}; Path=/; SameSite=Lax; HttpOnly`
+        )
+      } else if (
+        (path === '/' || path.endsWith('.html')) &&
+        path !== '/login.html' &&
+        !this.isAuthorized(req, url)
+      ) {
+        res.writeHead(302, { Location: '/login.html' })
+        res.end()
+        return
+      }
+
+      await this.serveStatic(res, path)
     } catch (err) {
       if (!res.headersSent) {
         sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
@@ -384,11 +348,20 @@ export class LanServer {
     }
   }
 
-  private async serveStatic(
-    _req: IncomingMessage,
-    res: ServerResponse,
-    pathname: string
-  ): Promise<void> {
+  private async serveStatic(res: ServerResponse, pathname: string): Promise<void> {
+    // Prefer login page from resources; app from built renderer
+    if (pathname === '/login.html' || pathname === '/login.css' || pathname === '/login.js') {
+      const loginRoot = resolveLoginRoot()
+      const name = pathname === '/login.html' ? 'login.html' : pathname.slice(1)
+      const filePath = join(loginRoot, name)
+      if (existsSync(filePath)) {
+        const ext = extname(filePath).toLowerCase()
+        res.writeHead(200, { 'Content-Type': MIME[ext] ?? 'application/octet-stream' })
+        createReadStream(filePath).pipe(res)
+        return
+      }
+    }
+
     let rel = pathname === '/' ? '/index.html' : pathname
     rel = normalize(rel).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '')
     if (rel.includes('..')) {
@@ -397,28 +370,34 @@ export class LanServer {
       return
     }
 
-    const root = normalize(this.webRoot)
+    const root = normalize(this.rendererRoot)
     const filePath = normalize(join(root, rel))
     const rootPrefix = root.endsWith('\\') || root.endsWith('/') ? root : root + (process.platform === 'win32' ? '\\' : '/')
     const rootOk =
       process.platform === 'win32'
         ? filePath.toLowerCase().startsWith(rootPrefix.toLowerCase())
         : filePath.startsWith(rootPrefix)
+
     if (!rootOk) {
       res.writeHead(403)
       res.end('Forbidden')
       return
     }
+
     if (!existsSync(filePath) || !statSync(filePath).isFile()) {
-      // SPA fallback
-      const index = join(this.webRoot, 'index.html')
+      // SPA fallback — inject remote bootstrap into index.html
+      const index = join(root, 'index.html')
       if (existsSync(index)) {
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-        createReadStream(index).pipe(res)
+        this.serveAppIndex(res, index)
         return
       }
       res.writeHead(404)
-      res.end('LAN web UI not found. Ensure resources/lan-web is packaged.')
+      res.end('App not built. Run npm run build first.')
+      return
+    }
+
+    if (filePath.endsWith('index.html')) {
+      this.serveAppIndex(res, filePath)
       return
     }
 
@@ -426,6 +405,38 @@ export class LanServer {
     res.writeHead(200, { 'Content-Type': MIME[ext] ?? 'application/octet-stream' })
     createReadStream(filePath).pipe(res)
   }
+
+  /** Serve index.html with remote-bridge bootstrapping flag. */
+  private serveAppIndex(res: ServerResponse, indexPath: string): void {
+    let html = readFileSync(indexPath, 'utf8')
+    // Mark remote mode before modules load
+    if (!html.includes('data-pi-remote')) {
+      html = html.replace(
+        '<head>',
+        `<head>\n    <script>window.__PI_REMOTE__=true;</script>`
+      )
+    }
+    // Loosen CSP for remote (same origin API + EventSource)
+    html = html.replace(
+      /content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'"/,
+      `content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:"`
+    )
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+    res.end(html)
+  }
+}
+
+function resolveLoginRoot(): string {
+  const candidates = [
+    join(process.resourcesPath ?? '', 'resources', 'lan-web'),
+    join(app.getAppPath(), 'resources', 'lan-web'),
+    join(__dirname, '../../resources/lan-web'),
+    join(process.cwd(), 'resources/lan-web'),
+  ]
+  for (const dir of candidates) {
+    if (dir && existsSync(join(dir, 'login.html'))) return dir
+  }
+  return candidates[candidates.length - 1]
 }
 
 let lanServerSingleton: LanServer | null = null
